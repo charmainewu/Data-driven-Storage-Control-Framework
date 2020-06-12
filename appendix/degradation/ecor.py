@@ -17,22 +17,31 @@ rcParams['font.family'] = 'serif'
 rcParams['font.serif'] = ['Times New Roman']
 
 ###############################read data###################################
+
+df = pd.read_csv('YearData2017.csv')
+D = df['demand'].values; 
+P = df['Price Data'].values; 
+
+uni_cost = 150000; deg = 0.001; L = 35;
+ETA_C = 0.995; ETA_D = 1.005; MU = 0.00001;
+B = 8820; XIN = 0.7; FUL = 1; W = 2; step = 1000;
+LEVEL= np.array([20,2000,2000]) 
+RL = QLearningTable(actions=list(range(3)))
+BFR = BRFramework(XIN, FUL, LEVEL, B, W, ETA_C, ETA_D, MU)
+B_size_d = BFR.battery_degradation(D,P,step,L,uni_cost,deg)
+
 df = pd.read_csv('YearData.csv')
 D = df['demand'].values; 
 P = df['Price Data'].values; 
 
-uni_cost = 150000; deg = 0.01; L = 35;
-ETA_C = 0.99; ETA_D = 1.01; MU = 0.001;
-B = 8820; XIN = 0.7; FUL = 1; W = 2; step = 500;
+uni_cost = 150000; deg = 0.001; L = 35;
+ETA_C = 0.995; ETA_D = 1.005; MU = 0.00001;
+B = 3000; XIN = 0.7; FUL = 1; W = 2; step = 1000;
 LEVEL= np.array([20,2000,2000]) 
 RL = QLearningTable(actions=list(range(3)))
 BFR = BRFramework(XIN, FUL, LEVEL, B, W, ETA_C, ETA_D, MU)
+ben = BFR.battery_degradation_evl(D,P,step,L,uni_cost,deg)
 
-
-print('###################################################')
-B_size = BFR.battery_nodegradation(D,P,step,L,uni_cost)
-print('###################################################')
-B_size_d = BFR.battery_degradation(D,P,step,L,uni_cost,deg)
 
     
     

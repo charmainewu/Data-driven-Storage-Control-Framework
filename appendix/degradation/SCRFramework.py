@@ -285,24 +285,26 @@ class BRFramework:
         return a, ts, tnz
     
     
-    def Athb(self, theta,BB,t,at,pt,xt0,tnz):
+    def Athb(self,theta,BB,t,at,pt,xt0,tnz):
         mu_c = 100000; mu_d =100000
+        leak = 0
         if t == tnz:
-            dt =  min(at,mu_d,xt0)
+            dt =  min(at*self.ETA_D,mu_d,xt0)
             vat = at - dt
             vbt = 0
             xt = xt0+vbt-dt
-            return xt,dt,vat,vbt
+            return xt,dt,vat,vbt,leak
         if pt<=theta:
             dt = 0
             vat = at
-            vbt = min(max(BB-xt0,0),mu_c)
+            vbt = min(max(BB-xt0,0)/self.ETA_C,mu_c)
+            leak = (tnz-t)*self.MU*BB
         else:
             dt =  min(at,mu_d,xt0)
             vat = at - dt
             vbt = 0
         xt = xt0+vbt-dt
-        return xt,dt,vat,vbt
+        return xt,dt,vat,vbt,leak
                 
     def Athb_ld(self,theta,ts,tnz,abar,pt,t,xt0):
         if t == tnz:
@@ -419,7 +421,7 @@ class BRFramework:
     def estimate_gmm(self,X):
         X = X.reshape(-1,1)
         bic = []; lowest_bic = np.infty;
-        n_components_range = range(1, 10)
+        n_components_range = range(1, 4)
         cv_types = ['spherical']
         for cv_type in cv_types:
             for n_components in n_components_range:
@@ -502,14 +504,15 @@ class BRFramework:
         theta = np.zeros((len(abar),len(a)))
         cost_shot = np.zeros((len(abar),len(a)))
         
-        Theta = self.Atheta_gmm(clf,len(a))
+        MAX_SHOT = 30
+        Theta = self.Atheta_gmm(clf,MAX_SHOT)
         
         for t in range(len(a)):
             for i in range(len(abar)):
                 if t>=ts[i] and t<=tnz[i]:
-                    theta = Theta[len(a)-int(tnz[i]-t)-1]
+                    theta = Theta[MAX_SHOT-int(tnz[i]-t)-1]
                     if t==ts[i]:
-                        xt,dt,vat,vbt = self.Athb_ld(theta,ts[i],tnz[i],abar[i],p[t],
+                        xt,dt,vat,vbt,leak = self.Athb_ld(theta,ts[i],tnz[i],abar[i],p[t],
                                                 t,0)
                         x[t] = x[t] + xt
                         d[t] = d[t] + dt
@@ -517,10 +520,11 @@ class BRFramework:
                         vb[t] = vb[t] + vbt
                         a[t] = a[t] - dt - vat 
                         xi[i,t] = xt
+                        cost_shot[i,t] =  cost_shot[i,t] + leak*p[int(tnz[i])]
                         if vat+vbt>0:
-                            cost_shot[i,t] =  p[t]*(vat+vbt)
+                            cost_shot[i,t] = cost_shot[i,t] + p[t]*(vat+vbt)
                     else:
-                        xt,dt,vat,vbt = self.Athb_ld(theta,ts[i],tnz[i],abar[i],p[t],
+                        xt,dt,vat,vbt,leak = self.Athb_ld(theta,ts[i],tnz[i],abar[i],p[t],
                                                 t,xi[i,t-1])
                         x[t] = x[t] + xt
                         d[t] = d[t] + dt
@@ -528,8 +532,11 @@ class BRFramework:
                         vb[t] = vb[t] + vbt
                         a[t] = a[t] - dt - vat 
                         xi[i,t] = xt
+                        cost_shot[i,t] =  cost_shot[i,t] + leak*p[int(tnz[i])]
                         if vat+vbt>0:
-                            cost_shot[i,t] =  p[t]*(vat+vbt)
+                            cost_shot[i,t] =  cost_shot[i,t] + p[t]*(vat+vbt)
+                            
+                   
         return x,d,va,vb,cost_shot
 
 ###############################################################################
@@ -1129,224 +1136,54 @@ class BRFramework:
         
         return cost_c,cost_p,cost_o,cost_f
     
+    def battery_degradation(self,D,P,step,L,uni_cost,deg):
+        B_range = 30000; B_size = np.zeros(2)
+        
+        d = D; d = np.r_[0,d]; d = d.round().astype(int);
+        p = P; p = np.r_[np.mean(p),p];
+        clf = self.estimate_gmm(p);
+        
+        ma_bene = np.zeros(int(B_range/step))
+        am_cost = np.zeros(int(B_range/step))
+        
+        for i in range(0,B_range,step):
+            index = int(i/step)
+            for j in range(L):
+                B_t = int(i-(j*deg*i))
+                self.B = B_t
+                pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
+                B_t = int(i+step-(j*deg*(i+step)))
+                self.B = B_t
+                pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
+                sum1 = sum(sum(cost_s))
+                sum2 = sum(sum(cost_b))
+                ma_bene[index] = ma_bene[index]+(sum1-sum2)
+                print((sum1-sum2)/(step*365*L))
+            ma_bene[index] = ma_bene[index]/(step*365*L)
+            am_cost[index] = (uni_cost)/(365*L)
+            print(ma_bene[index],am_cost[index])
+            try:
+                if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
+                    B_size[0] = i-step
+                    B_size[1] = (ma_bene[index-1]-am_cost[index-1])
+                    break
+            except:
+                continue
+        return B_size
     
-    def battery_degradation(self,D,P,step,L,uni_cost,deg):
-        fold_n = 12; fold_i = 730; 
-        B_range = 30000; B_size = np.zeros((fold_n,2));
-        for f in range(fold_n):
-            d = D[f*fold_i:(f+1)*fold_i]; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[f*fold_i:(f+1)*fold_i]; p = np.r_[np.mean(p),p];
-            clf = self.estimate_gmm(p);
-            
-            ma_bene = np.zeros(int(B_range/step))
-            am_cost = np.zeros(int(B_range/step))
-            
-            for i in range(0,B_range,step):
-                index = int(i/step)
-                for j in range(L):
-                    B_t = i-(j*deg*i)
-                    self.B = B_t
-                    pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
-                    self.B = B_t+step
-                    pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
-                    sum1 = sum(sum(cost_s))
-                    sum2 = sum(sum(cost_b))
-                    ma_bene[index] = ma_bene[index]+(sum1-sum2)*12
-                ma_bene[index] = ma_bene[index]/(step*365*L)
-                am_cost[index] = (uni_cost)/(365*L)
-                print(ma_bene[index],am_cost[index])
-                try:
-                    if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
-                        B_size[int(f),0] = i-step
-                        B_size[int(f),1] = (ma_bene[index-1]-am_cost[index-1])
-                        break
-                except:
-                    continue
-        np.save('./data/B_size_degra.npy',B_size)
-        return B_size
+    def battery_degradation_evl(self,D,P,step,L,uni_cost,deg):
+        d = D; d = np.r_[0,d]; d = d.round().astype(int);
+        p = P; p = np.r_[np.mean(p),p];
+        clf = self.estimate_gmm(p);
+        ma_bene = 0; B_base = self.B
+        for j in range(L):
+            B_t = int(B_base-(j*deg*B_base))
+            self.B = B_t
+            pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
+            ma_bene= ma_bene+sum(d*p)-(sum(sum(cost_s)))
+            print((ma_bene))
+        ma_bene = ma_bene
+        am_cost = uni_cost
         
-    def battery_nodegradation(self,D,P,step,L,uni_cost):
-        fold_n = 12; fold_i = 730; 
-        B_range = 30000; B_size = np.zeros((fold_n,2));
-        for f in range(fold_n):
-            d = D[f*fold_i:(f+1)*fold_i]; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[f*fold_i:(f+1)*fold_i]; p = np.r_[np.mean(p),p];
-            clf = self.estimate_gmm(p);
-            
-            ma_bene = np.zeros(int(B_range/step))
-            am_cost = np.zeros(int(B_range/step))
-            
-            for i in range(0,B_range,step):
-                index = int(i/step)
-                B_t = i
-                self.B = B_t
-                pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
-                self.B = B_t+step
-                pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
-                sum1 = sum(sum(cost_s))
-                sum2 = sum(sum(cost_b))
-                ma_bene[index] = (sum1-sum2)/(step*30)
-                am_cost[index] = (uni_cost)/(365*L)
-                print(ma_bene[index],am_cost[index])
-                try:
-                    if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
-                        B_size[int(f),0] = i-step
-                        B_size[int(f),1] = (ma_bene[index-1]-am_cost[index-1])
-                        break
-                except:
-                    continue
-        np.save('./data/B_size_nodegra.npy',B_size)
-        return B_size
-
-    """
-    def battery_degradation(self,D,P,step,L,uni_cost,deg):
-        fold_n = 12-3; fold_i = 730; 
-        B_range = 30000; B_size = np.zeros((fold_n,2));
-        for f in range(fold_n):
-            d = D[f*fold_i:(f+2)*fold_i]; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[f*fold_i:(f+2)*fold_i]; p = np.r_[np.mean(p),p];
-            clf = self.estimate_gmm(p);
+        return ma_bene,am_cost
         
-            d = D[(f+2)*fold_i:(f+3)*fold_i]; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[(f+2)*fold_i:(f+3)*fold_i]; p = np.r_[np.mean(p),p];
-            
-            ma_bene = np.zeros(int(B_range/step))
-            am_cost = np.zeros(int(B_range/step))
-            
-            for i in range(0,B_range,step):
-                index = int(i/step)
-                for j in range(L):
-                    B_t = i-(j*deg*i)
-                    self.B = B_t
-                    pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
-                    self.B = B_t+step
-                    pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
-                    sum1 = sum(sum(cost_s))
-                    sum2 = sum(sum(cost_b))
-                    ma_bene[index] = ma_bene[index]+(sum1-sum2)*12
-                ma_bene[index] = ma_bene[index]/(step*365*L)
-                am_cost[index] = (uni_cost)/(365*L)
-                print(ma_bene[index],am_cost[index])
-                try:
-                    if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
-                        B_size[int(f),0] = i-step
-                        B_size[int(f),1] = (ma_bene[index-1]-am_cost[index-1])
-                        break
-                except:
-                    continue
-        np.save('./data/B_size_degra.npy',B_size)
-        return B_size
-        
-    def battery_nodegradation(self,D,P,step,L,uni_cost):
-        fold_n = 12-3; fold_i = 730; 
-        B_range = 30000; B_size = np.zeros((fold_n,2));
-        for f in range(fold_n):
-            d = D[f*fold_i:(f+2)*fold_i]; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[f*fold_i:(f+2)*fold_i]; p = np.r_[np.mean(p),p];
-            clf = self.estimate_gmm(p);
-        
-            d = D[(f+2)*fold_i:(f+3)*fold_i]; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[(f+2)*fold_i:(f+3)*fold_i]; p = np.r_[np.mean(p),p];
-            
-            ma_bene = np.zeros(int(B_range/step))
-            am_cost = np.zeros(int(B_range/step))
-            
-            for i in range(0,B_range,step):
-                index = int(i/step)
-                B_t = i
-                self.B = B_t
-                pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
-                self.B = B_t+step
-                pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
-                sum1 = sum(sum(cost_s))
-                sum2 = sum(sum(cost_b))
-                ma_bene[index] = (sum1-sum2)/(step*30)
-                am_cost[index] = (uni_cost)/(365*L)
-                print(ma_bene[index],am_cost[index])
-                try:
-                    if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
-                        B_size[int(f),0] = i-step
-                        B_size[int(f),1] = (ma_bene[index-1]-am_cost[index-1])
-                        break
-                except:
-                    continue
-        np.save('./data/B_size_nodegra.npy',B_size)
-        return B_size
-
-
-    def battery_degradation(self,df,step,L,uni_cost,deg):
-        month = 12; N = 336; 
-        B_range = 30000; B_size = np.zeros((12,2));
-        for iternum in range(5,month):
-            print("==========================================================")
-            df_temp = df[df['Month'] == iternum+1]
-            P = df_temp['Price Data']
-            D = df_temp['demand']
-            clf = self.estimate_gmm(P[:336].values)
-            d = D[336:336+N].values; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[336:336+N].values; p = np.r_[np.mean(p),p];
-            
-            ma_bene = np.zeros(int(B_range/step))
-            am_cost = np.zeros(int(B_range/step))
-            
-            for i in range(0,B_range,step):
-                index = int(i/step)
-                for j in range(L):
-                    B_t = i-(j*deg*i)
-                    self.B = B_t
-                    pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
-                    self.B = B_t+step
-                    pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
-                    sum1 = sum(sum(cost_s))
-                    sum2 = sum(sum(cost_b))
-                    ma_bene[index] = ma_bene[index]+(sum1-sum2)/14
-                ma_bene[index] = ma_bene[index]/(step*L)
-                am_cost[index] = (uni_cost)/(365*L)
-                print(ma_bene[index],am_cost[index])
-                try:
-                    if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
-                        B_size[iternum,0] = i-step
-                        B_size[iternum,1] = (ma_bene[index-1]-am_cost[index-1])
-                        break
-                except:
-                    continue
-        #np.save('./data/B_size_degra.npy',B_size)
-        return B_size
-        
-    def battery_nodegradation(self,df,step,L,uni_cost):
-        month = 12; TRAIN = 336; N = 168;
-        B_range = 30000; B_size = np.zeros((12,2));
-        for iternum in range(month):
-            print("==========================================================")
-            df_temp = df[df['Month'] == iternum+1]
-            P = df_temp['Price Data']
-            D = df_temp['demand']
-            clf = self.estimate_gmm(P[:TRAIN].values)
-            d = D[TRAIN:TRAIN+N].values; d = np.r_[0,d]; d = d.round().astype(int);
-            p = P[TRAIN:TRAIN+N].values; p = np.r_[np.mean(p),p];
-            
-            ma_bene = np.zeros(int(B_range/step))
-            am_cost = np.zeros(int(B_range/step))
-            
-            for i in range(0,B_range,step):
-                index = int(i/step)
-                B_t = i
-                self.B = B_t
-                pa,pb,pc,pd,cost_s = self.Aour_hat_gmm(d,p,clf)
-                self.B = B_t+step
-                pa,pb,pc,pd,cost_b = self.Aour_hat_gmm(d,p,clf)
-                sum1 = sum(sum(cost_s))
-                sum2 = sum(sum(cost_b))
-                ma_bene[index] = (sum1-sum2)/(step*7)
-                am_cost[index] = (uni_cost)/(365*L)
-                print(ma_bene[index],am_cost[index])
-                try:
-                    if ma_bene[index-1]>am_cost[index-1] and ma_bene[index]<am_cost[index]:
-                        B_size[iternum,0] = i-step
-                        B_size[iternum,1] = (ma_bene[index-1]-am_cost[index-1])
-                        break
-                except:
-                    continue
-        #np.save('./data/B_size_nodegra.npy',B_size)
-        return B_size
-    """
