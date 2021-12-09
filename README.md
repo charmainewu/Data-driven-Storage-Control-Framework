@@ -18,7 +18,7 @@ The following requirements should be satisfied:
 ```sh
 Python==3.6
 tensorflow==1.14.0
-Kera==2.2.4
+keras==2.2.4
 scikit-learn==0.22.1
 matplotlib==3.1.2
 seaborn==0.9.0
